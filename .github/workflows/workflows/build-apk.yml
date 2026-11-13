@@ -1,1 +1,52 @@
+name: Build TrackFloat APK
 
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'TrackFloatAndroid-source.zip'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Extract project
+        run: unzip -q TrackFloatAndroid-source.zip -d project
+
+      - name: Set JVM target to 17
+        working-directory: project
+        run: |
+          sed -i '/compileSdk = 35/a\    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17\n    }' app/build.gradle.kts
+          cat >> app/build.gradle.kts <<'EOF'
+
+          tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+              compilerOptions {
+                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+              }
+          }
+          EOF
+
+      - name: Build APK
+        working-directory: project
+        run: gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrackFloat-APK
+          path: project/app/build/outputs/apk/debug/app-debug.apk
