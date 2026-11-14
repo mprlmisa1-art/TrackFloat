@@ -162,7 +162,7 @@ jobs:
                       .setStyle(Notification.BigTextStyle().bigText(
                           if (artist.isBlank()) title else "$title — $artist"
                       ))
-                      .setContentIntent(pendingIntent)
+                      .setContentIntent(searchPendingIntent)
                       .setOngoing(true)
                       .setOnlyAlertOnce(true)
                       .addAction(
