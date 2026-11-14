@@ -286,46 +286,55 @@ jobs:
                   if (title.isBlank()) return Result.failure()
                   postStatus("Ищу: ${title}", "TrackFloat ищет подходящую аудиозапись")
                   return try {
-                      val query = "title:${title.quoteForArchive()}" +
-                          if (artist.isNotBlank()) " AND creator:${artist.quoteForArchive()}" else ""
-                      val encoded = URLEncoder.encode("$query AND mediatype:audio", "UTF-8")
-                      val search = getJson("https://archive.org/advancedsearch.php?q=$encoded&fl[]=identifier,title,creator&rows=12&page=1&output=json")
-                      val docs = search.getJSONObject("response").getJSONArray("docs")
-                      var downloadUrl: String? = null
-                      var fileName: String? = null
-                      val wantedTitle = normalize(title)
-                      val wantedArtist = normalize(artist)
+                      // First try Jamendo: its API explicitly reports whether downloads are allowed.
+                      // This public test client_id is for development/testing only; replace with the app's own ID before public release.
+                      val jamendoUrl = searchJamendo(title, artist)
+                      if (jamendoUrl != null) {
+                          downloadUrl = jamendoUrl
+                          fileName = "${safeTrackName(title, artist)}.mp3"
+                      }
 
-                      for (i in 0 until minOf(docs.length(), 12)) {
-                          val doc = docs.optJSONObject(i) ?: continue
-                          val identifier = doc.optString("identifier")
-                          val resultTitle = normalize(doc.optString("title"))
-                          val resultArtist = normalize(doc.optString("creator"))
-                          if (identifier.isBlank() || resultTitle.isBlank()) continue
-                          if (!resultTitle.contains(wantedTitle) && !wantedTitle.contains(resultTitle)) continue
-                          if (wantedArtist.isNotBlank() && resultArtist.isNotBlank() &&
-                              !resultArtist.contains(wantedArtist) && !wantedArtist.contains(resultArtist)) continue
-                          try {
-                              val metadata = getJson("https://archive.org/metadata/$identifier")
-                              val license = metadata.optJSONObject("metadata")?.optString("licenseurl").orEmpty().lowercase()
-                              val permitted = license.contains("publicdomain") || license.contains("cc0") ||
-                                  license.contains("licenses/by/") || license.contains("licenses/by-sa/")
-                              if (!permitted) continue
-                              val files = metadata.optJSONArray("files") ?: continue
-                              for (j in 0 until files.length()) {
-                                  val file = files.optJSONObject(j) ?: continue
-                                  val name = file.optString("name")
-                                  val format = file.optString("format").lowercase()
-                                  if (name.lowercase().endsWith(".mp3") && !name.contains("/") &&
-                                      (format.contains("mp3") || format.contains("mpeg"))) {
-                                      fileName = name
-                                      downloadUrl = "https://archive.org/download/$identifier/" +
-                                          Uri.encode(name, "@#&=*+-_.,:!?()/~'")
-                                      break
+                      // Fallback: Internet Archive, but only when its metadata explicitly identifies a permissive license.
+                      if (downloadUrl == null) {
+                          val query = "title:${title.quoteForArchive()}" +
+                              if (artist.isNotBlank()) " AND creator:${artist.quoteForArchive()}" else ""
+                          val encoded = URLEncoder.encode("$query AND mediatype:audio", "UTF-8")
+                          val search = getJson("https://archive.org/advancedsearch.php?q=$encoded&fl[]=identifier,title,creator&rows=12&page=1&output=json")
+                          val docs = search.getJSONObject("response").getJSONArray("docs")
+                          val wantedTitle = normalize(title)
+                          val wantedArtist = normalize(artist)
+
+                          for (i in 0 until minOf(docs.length(), 12)) {
+                              val doc = docs.optJSONObject(i) ?: continue
+                              val identifier = doc.optString("identifier")
+                              val resultTitle = normalize(doc.optString("title"))
+                              val resultArtist = normalize(doc.optString("creator"))
+                              if (identifier.isBlank() || resultTitle.isBlank()) continue
+                              if (!resultTitle.contains(wantedTitle) && !wantedTitle.contains(resultTitle)) continue
+                              if (wantedArtist.isNotBlank() && resultArtist.isNotBlank() &&
+                                  !resultArtist.contains(wantedArtist) && !wantedArtist.contains(resultArtist)) continue
+                              try {
+                                  val metadata = getJson("https://archive.org/metadata/$identifier")
+                                  val license = metadata.optJSONObject("metadata")?.optString("licenseurl").orEmpty().lowercase()
+                                  val permitted = license.contains("publicdomain") || license.contains("cc0") ||
+                                      license.contains("licenses/by/") || license.contains("licenses/by-sa/")
+                                  if (!permitted) continue
+                                  val files = metadata.optJSONArray("files") ?: continue
+                                  for (j in 0 until files.length()) {
+                                      val file = files.optJSONObject(j) ?: continue
+                                      val name = file.optString("name")
+                                      val format = file.optString("format").lowercase()
+                                      if (name.lowercase().endsWith(".mp3") && !name.contains("/") &&
+                                          (format.contains("mp3") || format.contains("mpeg"))) {
+                                          fileName = name
+                                          downloadUrl = "https://archive.org/download/$identifier/" +
+                                              Uri.encode(name, "@#&=*+-_.,:!?()/~'")
+                                          break
+                                      }
                                   }
-                              }
-                              if (downloadUrl != null) break
-                          } catch (_: Exception) { }
+                                  if (downloadUrl != null) break
+                              } catch (_: Exception) { }
+                          }
                       }
 
                       if (downloadUrl == null || fileName == null) {
@@ -359,6 +368,45 @@ jobs:
                   manager.notify(704, builder.setSmallIcon(android.R.drawable.stat_sys_download)
                       .setContentTitle(title).setContentText(message).setOnlyAlertOnce(true).setAutoCancel(true).build())
               }
+
+              private fun searchJamendo(title: String, artist: String): String? {
+                  return try {
+                      val clientId = "709fa152" // Jamendo public test ID; replace with your own registered ID for release.
+                      val params = StringBuilder()
+                      params.append("client_id=").append(URLEncoder.encode(clientId, "UTF-8"))
+                      params.append("&format=json&limit=30&namesearch=").append(URLEncoder.encode(title, "UTF-8"))
+                      params.append("&audiodlformat=mp32&include=licenses&track_type=single+albumtrack")
+                      if (artist.isNotBlank()) {
+                          params.append("&artist_name=").append(URLEncoder.encode(artist, "UTF-8"))
+                      }
+                      val response = getJson("https://api.jamendo.com/v3.0/tracks/?$params")
+                      val results = response.optJSONArray("results") ?: return null
+                      val wantedTitle = normalize(title)
+                      val wantedArtist = normalize(artist)
+                      for (i in 0 until results.length()) {
+                          val track = results.optJSONObject(i) ?: continue
+                          val foundTitle = normalize(track.optString("name"))
+                          val foundArtist = normalize(track.optString("artist_name"))
+                          val titleMatches = foundTitle == wantedTitle ||
+                              (foundTitle.isNotBlank() && wantedTitle.isNotBlank() &&
+                               (foundTitle.contains(wantedTitle) || wantedTitle.contains(foundTitle)))
+                          val artistMatches = wantedArtist.isBlank() || foundArtist == wantedArtist ||
+                              (foundArtist.isNotBlank() && (foundArtist.contains(wantedArtist) || wantedArtist.contains(foundArtist)))
+                          if (!titleMatches || !artistMatches || !track.optBoolean("audiodownload_allowed", false)) continue
+                          val direct = track.optString("audiodownload")
+                          if (direct.startsWith("https://")) return direct
+                          val id = track.optString("id")
+                          if (id.isNotBlank()) {
+                              return "https://api.jamendo.com/v3.0/tracks/file/?client_id=$clientId&id=$id&audioformat=mp32&action=download"
+                          }
+                      }
+                      null
+                  } catch (_: Exception) { null }
+              }
+
+              private fun safeTrackName(title: String, artist: String): String =
+                  (if (artist.isBlank()) title else "$artist - $title")
+                      .replace(Regex("[\\\\/:*?\\"<>|]"), "_").take(100)
 
               private fun normalize(value: String): String =
                   value.lowercase().replace(Regex("[^\\p{L}\\p{N}]"), "")
