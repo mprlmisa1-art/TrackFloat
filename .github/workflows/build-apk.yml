@@ -30,7 +30,8 @@ jobs:
 
       - name: Inspect Android source files
         run: |
-          find project -type f \\( -name '*.kt' -o -name 'AndroidManifest.xml' \\) -print -exec sed -n '1,260p' {} \\;
+          find project -type f -name '*.kt' -print -exec cat {} \\\;
+          find project -name AndroidManifest.xml -print -exec cat {} \\\;
 
       - name: Configure Java and Kotlin JVM targets
         working-directory: project
