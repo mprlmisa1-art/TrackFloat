@@ -104,7 +104,34 @@ jobs:
               }
 
               override fun onNotificationPosted(sbn: StatusBarNotification?) {
-                  if (sbn?.packageName == youtubeMusicPackage) refreshController()
+                  if (sbn?.packageName != youtubeMusicPackage) return
+                  // Prefer the session token carried by YouTube Music's own media notification.
+                  // This can work even when getActiveSessions() temporarily returns an empty list.
+                  val token = try {
+                      @Suppress("DEPRECATION")
+                      sbn.notification.extras?.getParcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION)
+                  } catch (_: Exception) { null }
+                  if (token != null) {
+                      try {
+                          val fromNotification = MediaController(this, token)
+                          if (fromNotification.packageName == youtubeMusicPackage) {
+                              if (trackedController?.sessionToken != token) {
+                                  trackedController?.unregisterCallback(controllerCallback)
+                                  trackedController = fromNotification
+                                  trackedController?.registerCallback(controllerCallback)
+                              }
+                              val metadata = trackedController?.metadata
+                              showDiagnostic("YouTube Music: токен из уведомления получен; title=${metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty().ifBlank { "пусто" }}")
+                              metadata?.let { saveAndShowTrack(it) }
+                              return
+                          }
+                      } catch (e: Exception) {
+                          showDiagnostic("Ошибка токена MediaSession: ${e.javaClass.simpleName}: ${e.message ?: "без подробностей"}")
+                      }
+                  } else {
+                      showDiagnostic("Уведомление YouTube Music получено, но MediaSession token отсутствует")
+                  }
+                  refreshController()
               }
 
               override fun onNotificationRemoved(sbn: StatusBarNotification?) {
@@ -122,12 +149,15 @@ jobs:
                   try {
                       val manager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
                       val sessions = manager.getActiveSessions(ComponentName(this, TrackNotificationListener::class.java))
-                      val controller = sessions.firstOrNull { it.packageName == youtubeMusicPackage }
-                      if (controller !== trackedController) {
+                      val activeController = sessions.firstOrNull { it.packageName == youtubeMusicPackage }
+                      // Do not discard a valid controller obtained from the notification token
+                      // merely because MIUI temporarily omits it from getActiveSessions().
+                      if (activeController != null && trackedController?.sessionToken != activeController.sessionToken) {
                           trackedController?.unregisterCallback(controllerCallback)
-                          trackedController = controller
+                          trackedController = activeController
                           trackedController?.registerCallback(controllerCallback)
                       }
+                      val controller = activeController ?: trackedController?.takeIf { it.packageName == youtubeMusicPackage }
                       val state = controller?.playbackState?.state
                       val metadata = controller?.metadata
                       val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
@@ -135,7 +165,8 @@ jobs:
                       val status = if (controller == null) {
                           "YouTube Music: сессия НЕ найдена; активных сессий: ${sessions.size} [${sessionSummary}]"
                       } else {
-                          "YouTube Music: сессия найдена; state=${state}; title=${title.ifBlank { "пусто" }}; активных сессий: ${sessions.size}"
+                          val source = if (activeController != null) "список активных сессий" else "токен уведомления"
+                          "YouTube Music: сессия найдена через ${source}; state=${state}; title=${title.ifBlank { "пусто" }}; активных сессий: ${sessions.size}"
                       }
                       showDiagnostic(status)
                       metadata?.let { saveAndShowTrack(it) }
