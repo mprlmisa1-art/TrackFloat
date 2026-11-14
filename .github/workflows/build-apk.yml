@@ -321,6 +321,16 @@ jobs:
                           }
                       }
 
+                      // General web search fallback: inspect public search results, but only accept
+                      // direct MP3 links from pages that visibly identify a reusable license.
+                      if (downloadUrl == null) {
+                          val webResult = searchWebLicensedAudio(title, artist)
+                          if (webResult != null) {
+                              downloadUrl = webResult
+                              fileName = "${safeTrackName(title, artist)}.mp3"
+                          }
+                      }
+
                       // Fallback: Internet Archive, but only when its metadata explicitly identifies a permissive license.
                       if (downloadUrl == null) {
                           val query = "title:${title.quoteForArchive()}" +
@@ -428,6 +438,60 @@ jobs:
                       }
                       if (bestScore >= if (wantedArtist.isBlank()) 1 else 3) best else null
                   } catch (_: Exception) { null }
+              }
+
+              private fun searchWebLicensedAudio(title: String, artist: String): String? {
+                  return try {
+                      val query = "\"$title\" \"$artist\" MP3 download Creative Commons"
+                      val searchUrl = "https://html.duckduckgo.com/html/?q=" +
+                          URLEncoder.encode(query, "UTF-8")
+                      val html = getText(searchUrl)
+                      val linkPattern = Regex("""(?is)<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["']""")
+                      val candidates = linkPattern.findAll(html).mapNotNull { match ->
+                          val raw = match.groupValues[1].replace("&amp;", "&")
+                          try {
+                              val parsed = Uri.parse(raw)
+                              val target = parsed.getQueryParameter("uddg") ?: raw
+                              if (target.startsWith("https://")) target else null
+                          } catch (_: Exception) { null }
+                      }.distinct().take(8).toList()
+
+                      val wantedTitle = normalize(title)
+                      val wantedArtist = normalize(artist)
+                      for (pageUrl in candidates) {
+                          try {
+                              val page = getText(pageUrl)
+                              val normalizedPage = normalize(page)
+                              val titleFound = wantedTitle.isNotBlank() && normalizedPage.contains(wantedTitle)
+                              val artistFound = wantedArtist.isBlank() || normalizedPage.contains(wantedArtist)
+                              val hasLicenseEvidence = page.contains("creativecommons.org/licenses/", true) ||
+                                  page.contains("creativecommons.org/publicdomain/", true) ||
+                                  page.contains("public domain", true) ||
+                                  page.contains("CC0", true)
+                              if (!titleFound || !artistFound || !hasLicenseEvidence) continue
+
+                              val mp3Pattern = Regex("""(?is)href=["']([^"'<>]+\.mp3(?:\?[^"'<>]*)?)["']""")
+                              for (match in mp3Pattern.findAll(page)) {
+                                  val href = match.groupValues[1]
+                                      .replace("&amp;", "&")
+                                      .replace("&#x2F;", "/")
+                                  val direct = try { URL(URL(pageUrl), href).toString() } catch (_: Exception) { "" }
+                                  if (direct.startsWith("https://")) return direct
+                              }
+                          } catch (_: Exception) { }
+                      }
+                      null
+                  } catch (_: Exception) { null }
+              }
+
+              private fun getText(address: String): String {
+                  val connection = URL(address).openConnection() as HttpURLConnection
+                  connection.connectTimeout = 7000
+                  connection.readTimeout = 9000
+                  connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+                  connection.setRequestProperty("Accept", "text/html,application/xhtml+xml")
+                  return try { connection.inputStream.bufferedReader().use { it.readText() } }
+                  finally { connection.disconnect() }
               }
 
               private fun searchAudius(title: String, artist: String): Pair<String, String>? {
