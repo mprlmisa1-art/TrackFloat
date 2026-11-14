@@ -280,12 +280,18 @@ jobs:
           }
 
           class TrackDownloadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+              private val youtubeApiKey = "YOUTUBE_API_KEY_PLACEHOLDER"
+
               override suspend fun doWork(): Result {
                   val title = inputData.getString("title").orEmpty()
                   val artist = inputData.getString("artist").orEmpty()
                   if (title.isBlank()) return Result.failure()
-                  postStatus("Ищу: ${title}", "TrackFloat ищет подходящую аудиозапись")
+                  postStatus("Ищу: ${title}", "Сверяю название и исполнителя с YouTube")
                   return try {
+                      val youtubeMatch = searchYoutube(title, artist)
+                      if (youtubeMatch != null) {
+                          postStatus("YouTube: ${youtubeMatch.first}", "Канал: ${youtubeMatch.second}; проверяю доступные для загрузки источники")
+                      }
                       var downloadUrl: String? = null
                       var fileName: String? = null
                       // First try Audius: public read-only search, and download only tracks marked downloadable.
@@ -381,6 +387,40 @@ jobs:
                       .setContentTitle(title).setContentText(message).setOnlyAlertOnce(true).setAutoCancel(true).build())
               }
 
+              private fun searchYoutube(title: String, artist: String): Pair<String, String>? {
+                  if (youtubeApiKey.isBlank() || youtubeApiKey == "YOUTUBE_API_KEY_PLACEHOLDER") return null
+                  return try {
+                      val query = if (artist.isBlank()) title else "$title $artist"
+                      val address = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&maxResults=10&q=" +
+                          URLEncoder.encode(query, "UTF-8") + "&key=" + URLEncoder.encode(youtubeApiKey, "UTF-8")
+                      val response = getJson(address)
+                      val items = response.optJSONArray("items") ?: return null
+                      val wantedTitle = normalize(title)
+                      val wantedArtist = normalize(artist)
+                      var best: Pair<String, String>? = null
+                      var bestScore = 0
+                      for (i in 0 until items.length()) {
+                          val item = items.optJSONObject(i) ?: continue
+                          val snippet = item.optJSONObject("snippet") ?: continue
+                          val foundTitle = normalize(snippet.optString("title"))
+                          val foundChannel = normalize(snippet.optString("channelTitle"))
+                          val titleMatches = foundTitle == wantedTitle ||
+                              (foundTitle.isNotBlank() && wantedTitle.isNotBlank() &&
+                               (foundTitle.contains(wantedTitle) || wantedTitle.contains(foundTitle)))
+                          if (!titleMatches) continue
+                          val artistMatches = wantedArtist.isBlank() || foundChannel == wantedArtist ||
+                              (foundChannel.isNotBlank() &&
+                               (foundChannel.contains(wantedArtist) || wantedArtist.contains(foundChannel)))
+                          val score = (if (foundTitle == wantedTitle) 2 else 1) + (if (artistMatches) 2 else 0)
+                          if (score > bestScore) {
+                              bestScore = score
+                              best = Pair(snippet.optString("title"), snippet.optString("channelTitle"))
+                          }
+                      }
+                      if (bestScore >= if (wantedArtist.isBlank()) 1 else 3) best else null
+                  } catch (_: Exception) { null }
+              }
+
               private fun searchAudius(title: String, artist: String): Pair<String, String>? {
                   return try {
                       val query = if (artist.isBlank()) title else "$title $artist"
@@ -468,6 +508,26 @@ jobs:
               }
           }
           KOTLIN
+
+      - name: Inject YouTube API key
+        working-directory: project
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path("app/src/main/java/com/example/trackfloat/TrackNotificationListener.kt")
+          source = path.read_text()
+          marker = 'private val youtubeApiKey = "YOUTUBE_API_KEY_PLACEHOLDER"'
+          key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+          if not key:
+              raise SystemExit("GitHub secret YOUTUBE_API_KEY is missing")
+          if marker not in source:
+              raise SystemExit("YouTube API key placeholder not found")
+          source = source.replace(marker, 'private val youtubeApiKey = "' + key.replace('\\', '\\\\').replace('"', '\\"') + '"', 1)
+          path.write_text(source)
+          PY
 
       - name: Enable Internet and download action
         working-directory: project
