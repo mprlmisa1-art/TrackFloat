@@ -252,7 +252,7 @@ jobs:
           if marker not in source:
               raise SystemExit("MainActivity.onCreate not found")
           if "POST_NOTIFICATIONS" not in source:
-              match = re.search(r"(override\\s+fun\\s+onCreate\\s*\\([^)]*\\)\\s*\\{)", source)
+              match = re.search(r"(override\s+fun\s+onCreate\s*\([^)]*\)\s*\{)", source)
               if not match:
                   raise SystemExit("Could not safely locate MainActivity.onCreate body")
               request = '''
