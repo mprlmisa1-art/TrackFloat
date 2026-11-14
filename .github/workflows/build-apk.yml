@@ -28,6 +28,10 @@ jobs:
       - name: Extract project
         run: unzip -q TrackFloatAndroid-source.zip -d project
 
+      - name: Inspect Android source files
+        run: |
+          find project -type f \\( -name '*.kt' -o -name 'AndroidManifest.xml' \\) -print -exec sed -n '1,260p' {} \\;
+
       - name: Configure Java and Kotlin JVM targets
         working-directory: project
         run: |
