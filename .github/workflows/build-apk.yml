@@ -288,13 +288,23 @@ jobs:
                   return try {
                       var downloadUrl: String? = null
                       var fileName: String? = null
-                      // First try Jamendo: its API explicitly reports whether downloads are allowed.
-                      // This public test client_id is for development/testing only; replace with the app's own ID before public release.
-                      val jamendoUrl = searchJamendo(title, artist)
-                      if (jamendoUrl != null) {
-                          downloadUrl = jamendoUrl
+                      // First try Audius: public read-only search, and download only tracks marked downloadable.
+                      val audiusResult = searchAudius(title, artist)
+                      if (audiusResult != null) {
+                          downloadUrl = audiusResult.first
                           fileName = "${safeTrackName(title, artist)}.mp3"
                       }
+
+                      // Second try Jamendo: its API explicitly reports whether downloads are allowed.
+                      // This public test client_id is for development/testing only; replace with your own registered ID before public release.
+                      if (downloadUrl == null) {
+                          val jamendoUrl = searchJamendo(title, artist)
+                          if (jamendoUrl != null) {
+                              downloadUrl = jamendoUrl
+                              fileName = "${safeTrackName(title, artist)}.mp3"
+                          }
+                      }
+
 
                       // Fallback: Internet Archive, but only when its metadata explicitly identifies a permissive license.
                       if (downloadUrl == null) {
@@ -370,6 +380,37 @@ jobs:
                   manager.notify(704, builder.setSmallIcon(android.R.drawable.stat_sys_download)
                       .setContentTitle(title).setContentText(message).setOnlyAlertOnce(true).setAutoCancel(true).build())
               }
+
+              private fun searchAudius(title: String, artist: String): Pair<String, String>? {
+                  return try {
+                      val query = if (artist.isBlank()) title else "$title $artist"
+                      val address = "https://api.audius.co/v1/tracks/search?query=" +
+                          URLEncoder.encode(query, "UTF-8") + "&limit=25&only_downloadable=true&app_name=TrackFloat"
+                      val response = getJson(address)
+                      val results = response.optJSONArray("data") ?: return null
+                      val wantedTitle = normalize(title)
+                      val wantedArtist = normalize(artist)
+                      for (i in 0 until results.length()) {
+                          val track = results.optJSONObject(i) ?: continue
+                          val foundTitle = normalize(track.optString("title"))
+                          val user = track.optJSONObject("user")
+                          val foundArtist = normalize(user?.optString("name").orEmpty())
+                          val titleMatches = foundTitle == wantedTitle ||
+                              (foundTitle.isNotBlank() && wantedTitle.isNotBlank() &&
+                               (foundTitle.contains(wantedTitle) || wantedTitle.contains(foundTitle)))
+                          val artistMatches = wantedArtist.isBlank() || foundArtist == wantedArtist ||
+                              (foundArtist.isNotBlank() &&
+                               (foundArtist.contains(wantedArtist) || wantedArtist.contains(foundArtist)))
+                          if (!titleMatches || !artistMatches || !track.optBoolean("is_downloadable", false)) continue
+                          val id = track.optString("id")
+                          if (id.isBlank()) continue
+                          val download = "https://api.audius.co/v1/tracks/$id/download?app_name=TrackFloat"
+                          return Pair(download, track.optString("title"))
+                      }
+                      null
+                  } catch (_: Exception) { null }
+              }
+
 
               private fun searchJamendo(title: String, artist: String): String? {
                   return try {
