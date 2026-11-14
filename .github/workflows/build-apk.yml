@@ -312,6 +312,15 @@ jobs:
                       }
 
 
+                      // Openverse: aggregated search for openly licensed audio, restricted to MP3 and reusable licenses.
+                      if (downloadUrl == null) {
+                          val openverseResult = searchOpenverse(title, artist)
+                          if (openverseResult != null) {
+                              downloadUrl = openverseResult.first
+                              fileName = "${safeTrackName(title, artist)}.mp3"
+                          }
+                      }
+
                       // Fallback: Internet Archive, but only when its metadata explicitly identifies a permissive license.
                       if (downloadUrl == null) {
                           val query = "title:${title.quoteForArchive()}" +
@@ -451,6 +460,38 @@ jobs:
                   } catch (_: Exception) { null }
               }
 
+
+              private fun searchOpenverse(title: String, artist: String): Pair<String, String>? {
+                  return try {
+                      val query = if (artist.isBlank()) title else "$title $artist"
+                      val address = "https://api.openverse.org/v1/audio/?q=" +
+                          URLEncoder.encode(query, "UTF-8") +
+                          "&page_size=30&license=cc0,by,by-sa,pdm&extension=mp3&category=music"
+                      val response = getJson(address)
+                      val results = response.optJSONArray("results") ?: return null
+                      val wantedTitle = normalize(title)
+                      val wantedArtist = normalize(artist)
+                      for (i in 0 until results.length()) {
+                          val track = results.optJSONObject(i) ?: continue
+                          val foundTitle = normalize(track.optString("title"))
+                          val foundArtist = normalize(track.optString("creator"))
+                          val mediaUrl = track.optString("url")
+                          val license = track.optString("license").lowercase()
+                          val titleMatches = foundTitle == wantedTitle ||
+                              (foundTitle.isNotBlank() && wantedTitle.isNotBlank() &&
+                               (foundTitle.contains(wantedTitle) || wantedTitle.contains(foundTitle)))
+                          val artistMatches = wantedArtist.isBlank() || foundArtist == wantedArtist ||
+                              (foundArtist.isNotBlank() &&
+                               (foundArtist.contains(wantedArtist) || wantedArtist.contains(foundArtist)))
+                          val permittedLicense = license == "cc0" || license == "pdm" ||
+                              license == "by" || license == "by-sa"
+                          if (!titleMatches || !artistMatches || !permittedLicense ||
+                              !mediaUrl.startsWith("https://")) continue
+                          return Pair(mediaUrl, track.optString("title"))
+                      }
+                      null
+                  } catch (_: Exception) { null }
+              }
 
               private fun searchJamendo(title: String, artist: String): String? {
                   return try {
