@@ -49,6 +49,8 @@ jobs:
           import android.net.Uri
           import android.os.Build
           import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
           import android.service.notification.NotificationListenerService
           import android.service.notification.StatusBarNotification
           import android.widget.Toast
@@ -61,6 +63,17 @@ jobs:
               private val youtubeMusicPackage = "com.google.android.apps.youtube.music"
               private val channelId = "trackfloat_now_playing"
               private var trackedController: MediaController? = null
+              private val mainHandler = Handler(Looper.getMainLooper())
+              private var lastShownTrack = ""
+
+              // Some YouTube Music versions do not reliably deliver metadata callbacks.
+              // Poll the active MediaSession while the listener is connected.
+              private val pollTracks = object : Runnable {
+                  override fun run() {
+                      refreshController()
+                      mainHandler.postDelayed(this, 1500)
+                  }
+              }
 
               private val controllerCallback = object : MediaController.Callback() {
                   override fun onMetadataChanged(metadata: MediaMetadata?) { saveAndShowTrack(metadata) }
@@ -70,12 +83,14 @@ jobs:
               override fun onListenerConnected() {
                   super.onListenerConnected()
                   createChannel()
-                  refreshController()
+                  mainHandler.removeCallbacks(pollTracks)
+                  mainHandler.post(pollTracks)
               }
 
               // Android/MIUI may temporarily disconnect notification listeners.
               // Request a system rebind so track updates can resume automatically.
               override fun onListenerDisconnected() {
+                  mainHandler.removeCallbacks(pollTracks)
                   trackedController?.unregisterCallback(controllerCallback)
                   trackedController = null
                   super.onListenerDisconnected()
@@ -93,6 +108,7 @@ jobs:
               }
 
               override fun onDestroy() {
+                  mainHandler.removeCallbacks(pollTracks)
                   trackedController?.unregisterCallback(controllerCallback)
                   trackedController = null
                   super.onDestroy()
@@ -118,6 +134,9 @@ jobs:
                   val artist = (metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
                       ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))?.trim().orEmpty()
                   if (title.isBlank()) return
+                  val trackKey = "$title|$artist"
+                  if (trackKey == lastShownTrack) return
+                  lastShownTrack = trackKey
                   getSharedPreferences("track", MODE_PRIVATE).edit()
                       .putString("title", title).putString("artist", artist).apply()
                   showTrackNotification(title, artist)
