@@ -28,69 +28,139 @@ jobs:
       - name: Extract project
         run: unzip -q TrackFloatAndroid-source.zip -d project
 
-      - name: Fix YouTube Music track detection
+      - name: Add live track notification
         working-directory: project
         run: |
           cat > app/src/main/java/com/example/trackfloat/TrackNotificationListener.kt <<'KOTLIN'
           package com.example.trackfloat
 
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
           import android.content.ComponentName
+          import android.content.Context
+          import android.content.Intent
           import android.media.MediaMetadata
           import android.media.session.MediaController
           import android.media.session.MediaSessionManager
+          import android.os.Build
           import android.service.notification.NotificationListenerService
           import android.service.notification.StatusBarNotification
 
           class TrackNotificationListener : NotificationListenerService() {
-
               private val youtubeMusicPackage = "com.google.android.apps.youtube.music"
+              private val channelId = "trackfloat_now_playing"
+              private var trackedController: MediaController? = null
+
+              private val controllerCallback = object : MediaController.Callback() {
+                  override fun onMetadataChanged(metadata: MediaMetadata?) {
+                      saveAndShowTrack(metadata)
+                  }
+
+                  override fun onPlaybackStateChanged(state: android.media.session.PlaybackState?) {
+                      refreshController()
+                  }
+              }
 
               override fun onListenerConnected() {
                   super.onListenerConnected()
-                  updateTrackFromMediaSession()
+                  createChannel()
+                  refreshController()
               }
 
               override fun onNotificationPosted(sbn: StatusBarNotification?) {
-                  if (sbn?.packageName == youtubeMusicPackage) {
-                      updateTrackFromMediaSession()
-                  }
+                  if (sbn?.packageName == youtubeMusicPackage) refreshController()
               }
 
               override fun onNotificationRemoved(sbn: StatusBarNotification?) {
-                  if (sbn?.packageName == youtubeMusicPackage) {
-                      updateTrackFromMediaSession()
-                  }
+                  if (sbn?.packageName == youtubeMusicPackage) refreshController()
               }
 
-              private fun updateTrackFromMediaSession() {
+              override fun onDestroy() {
+                  trackedController?.unregisterCallback(controllerCallback)
+                  trackedController = null
+                  super.onDestroy()
+              }
+
+              private fun refreshController() {
                   try {
-                      val manager = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+                      val manager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
                       val sessions = manager.getActiveSessions(
                           ComponentName(this, TrackNotificationListener::class.java)
                       )
                       val controller = sessions.firstOrNull {
                           it.packageName == youtubeMusicPackage
-                      } ?: return
-
-                      val metadata: MediaMetadata = controller.metadata ?: return
-                      val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)
-                          ?.trim().orEmpty()
-                      val artist = (
-                          metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
-                              ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
-                          )?.trim().orEmpty()
-
-                      if (title.isNotBlank()) {
-                          getSharedPreferences("track", MODE_PRIVATE).edit()
-                              .putString("title", title)
-                              .putString("artist", artist)
-                              .apply()
                       }
-                  } catch (_: SecurityException) {
-                      // Notification access may not yet be fully connected.
+                      if (controller !== trackedController) {
+                          trackedController?.unregisterCallback(controllerCallback)
+                          trackedController = controller
+                          trackedController?.registerCallback(controllerCallback)
+                      }
+                      controller?.metadata?.let { saveAndShowTrack(it) }
                   } catch (_: Exception) {
-                      // Ignore transient media-session errors.
+                      // Notification access may not yet be fully connected.
                   }
+              }
+
+              private fun saveAndShowTrack(metadata: MediaMetadata?) {
+                  metadata ?: return
+                  val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)?.trim().orEmpty()
+                  val artist = (metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                      ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))?.trim().orEmpty()
+                  if (title.isBlank()) return
+
+                  getSharedPreferences("track", MODE_PRIVATE).edit()
+                      .putString("title", title)
+                      .putString("artist", artist)
+                      .apply()
+                  showTrackNotification(title, artist)
+              }
+
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val manager = getSystemService(NotificationManager::class.java)
+                      val channel = NotificationChannel(
+                          channelId, "TrackFloat — сейчас играет",
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                      channel.description = "Текущий трек из YouTube Music"
+                      manager.createNotificationChannel(channel)
+                  }
+              }
+
+              private fun showTrackNotification(title: String, artist: String) {
+                  val openIntent = Intent(this, MainActivity::class.java).apply {
+                      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                  }
+                  val pendingIntent = PendingIntent.getActivity(
+                      this, 701, openIntent,
+                      PendingIntent.FLAG_UPDATE_CURRENT or
+                          (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+                  )
+                  val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      Notification.Builder(this, channelId)
+                  } else {
+                      @Suppress("DEPRECATION")
+                      Notification.Builder(this)
+                  }
+                  val notification = builder
+                      .setSmallIcon(android.R.drawable.ic_media_play)
+                      .setContentTitle(title)
+                      .setContentText(if (artist.isBlank()) "Сейчас играет" else artist)
+                      .setStyle(Notification.BigTextStyle().bigText(
+                          if (artist.isBlank()) title else "$title — $artist"
+                      ))
+                      .setContentIntent(pendingIntent)
+                      .setOngoing(true)
+                      .setOnlyAlertOnce(true)
+                      .addAction(
+                          android.R.drawable.ic_menu_search,
+                          "Открыть TrackFloat",
+                          pendingIntent
+                      )
+                      .build()
+                  getSystemService(NotificationManager::class.java).notify(701, notification)
               }
           }
           KOTLIN
@@ -103,11 +173,9 @@ jobs:
 
           path = Path("app/build.gradle.kts")
           text = path.read_text()
-
           marker = "    compileSdk = 35\n"
           if marker not in text:
               raise SystemExit("Could not find compileSdk = 35 in app/build.gradle.kts")
-
           compile_options = """    compileSdk = 35
 
               compileOptions {
@@ -115,9 +183,10 @@ jobs:
                   targetCompatibility = JavaVersion.VERSION_17
               }
           """
-          text = text.replace(marker, compile_options, 1)
-
-          text += """
+          if "compileOptions {" not in text:
+              text = text.replace(marker, compile_options, 1)
+          if "KotlinCompile" not in text:
+              text += """
 
           tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
               compilerOptions {
