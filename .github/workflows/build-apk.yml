@@ -428,7 +428,7 @@ jobs:
           path = Path("app/build.gradle.kts")
           text = path.read_text()
           if "androidx.work:work-runtime-ktx" not in text:
-              text = text.replace("dependencies {", 'dependencies {\n    implementation("androidx.work:work-runtime-ktx:2.10.0")', 1)
+              text += '\n\ndependencies {\n    implementation("androidx.work:work-runtime-ktx:2.10.0")\n}\n'
           marker = "    compileSdk = 35\n"
           if marker not in text:
               raise SystemExit("Could not find compileSdk = 35 in app/build.gradle.kts")
