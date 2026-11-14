@@ -286,6 +286,8 @@ jobs:
                   if (title.isBlank()) return Result.failure()
                   postStatus("Ищу: ${title}", "TrackFloat ищет подходящую аудиозапись")
                   return try {
+                      var downloadUrl: String? = null
+                      var fileName: String? = null
                       // First try Jamendo: its API explicitly reports whether downloads are allowed.
                       // This public test client_id is for development/testing only; replace with the app's own ID before public release.
                       val jamendoUrl = searchJamendo(title, artist)
@@ -406,7 +408,8 @@ jobs:
 
               private fun safeTrackName(title: String, artist: String): String =
                   (if (artist.isBlank()) title else "$artist - $title")
-                      .replace(Regex("[\\\\/:*?\\"<>|]"), "_").take(100)
+                      .map { ch -> if (ch in charArrayOf('/', '\\', ':', '*', '?', '"', '<', '>', '|')) '_' else ch }
+                      .joinToString("").take(100)
 
               private fun normalize(value: String): String =
                   value.lowercase().replace(Regex("[^\\p{L}\\p{N}]"), "")
