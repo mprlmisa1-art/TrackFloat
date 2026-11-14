@@ -30,8 +30,13 @@ jobs:
 
       - name: Inspect Android source files
         run: |
-          find project -type f -name '*.kt' -print -exec cat {} \\\;
-          find project -name AndroidManifest.xml -print -exec cat {} \\\;
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in Path("project").rglob("*"):
+              if path.is_file() and (path.suffix == ".kt" or path.name == "AndroidManifest.xml"):
+                  print("\\n===== " + str(path) + " =====")
+                  print(path.read_text(errors="replace"))
+          PY
 
       - name: Configure Java and Kotlin JVM targets
         working-directory: project
