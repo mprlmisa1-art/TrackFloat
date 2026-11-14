@@ -28,15 +28,72 @@ jobs:
       - name: Extract project
         run: unzip -q TrackFloatAndroid-source.zip -d project
 
-      - name: Inspect Android source files
+      - name: Fix YouTube Music track detection
+        working-directory: project
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          for path in Path("project").rglob("*"):
-              if path.is_file() and (path.suffix == ".kt" or path.name == "AndroidManifest.xml"):
-                  print("\\n===== " + str(path) + " =====")
-                  print(path.read_text(errors="replace"))
-          PY
+          cat > app/src/main/java/com/example/trackfloat/TrackNotificationListener.kt <<'KOTLIN'
+          package com.example.trackfloat
+
+          import android.content.ComponentName
+          import android.media.MediaMetadata
+          import android.media.session.MediaController
+          import android.media.session.MediaSessionManager
+          import android.service.notification.NotificationListenerService
+          import android.service.notification.StatusBarNotification
+
+          class TrackNotificationListener : NotificationListenerService() {
+
+              private val youtubeMusicPackage = "com.google.android.apps.youtube.music"
+
+              override fun onListenerConnected() {
+                  super.onListenerConnected()
+                  updateTrackFromMediaSession()
+              }
+
+              override fun onNotificationPosted(sbn: StatusBarNotification?) {
+                  if (sbn?.packageName == youtubeMusicPackage) {
+                      updateTrackFromMediaSession()
+                  }
+              }
+
+              override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+                  if (sbn?.packageName == youtubeMusicPackage) {
+                      updateTrackFromMediaSession()
+                  }
+              }
+
+              private fun updateTrackFromMediaSession() {
+                  try {
+                      val manager = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+                      val sessions = manager.getActiveSessions(
+                          ComponentName(this, TrackNotificationListener::class.java)
+                      )
+                      val controller = sessions.firstOrNull {
+                          it.packageName == youtubeMusicPackage
+                      } ?: return
+
+                      val metadata: MediaMetadata = controller.metadata ?: return
+                      val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)
+                          ?.trim().orEmpty()
+                      val artist = (
+                          metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                              ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
+                          )?.trim().orEmpty()
+
+                      if (title.isNotBlank()) {
+                          getSharedPreferences("track", MODE_PRIVATE).edit()
+                              .putString("title", title)
+                              .putString("artist", artist)
+                              .apply()
+                      }
+                  } catch (_: SecurityException) {
+                      // Notification access may not yet be fully connected.
+                  } catch (_: Exception) {
+                      // Ignore transient media-session errors.
+                  }
+              }
+          }
+          KOTLIN
 
       - name: Configure Java and Kotlin JVM targets
         working-directory: project
@@ -61,7 +118,7 @@ jobs:
           text = text.replace(marker, compile_options, 1)
 
           text += """
-          
+
           tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
               compilerOptions {
                   jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
