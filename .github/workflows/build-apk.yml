@@ -1,4 +1,4 @@
-name: Build TrackFloat APK
+name: Build TrackFloat APK # notification-permission-fix
 
 on:
   workflow_dispatch:
