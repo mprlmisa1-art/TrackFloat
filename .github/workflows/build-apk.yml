@@ -65,6 +65,8 @@ jobs:
               private var trackedController: MediaController? = null
               private val mainHandler = Handler(Looper.getMainLooper())
               private var lastShownTrack = ""
+              private var lastDiagnostic = ""
+              private var lastDiagnosticAt = 0L
 
               // Some YouTube Music versions do not reliably deliver metadata callbacks.
               // Poll the active MediaSession while the listener is connected.
@@ -83,6 +85,7 @@ jobs:
               override fun onListenerConnected() {
                   super.onListenerConnected()
                   createChannel()
+                  showDiagnostic("Служба подключена; запускаю опрос")
                   mainHandler.removeCallbacks(pollTracks)
                   mainHandler.post(pollTracks)
               }
@@ -93,6 +96,7 @@ jobs:
                   mainHandler.removeCallbacks(pollTracks)
                   trackedController?.unregisterCallback(controllerCallback)
                   trackedController = null
+                  showDiagnostic("Служба отключена системой; запрашиваю переподключение")
                   super.onListenerDisconnected()
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                       requestRebind(ComponentName(this, TrackNotificationListener::class.java))
@@ -124,7 +128,39 @@ jobs:
                           trackedController = controller
                           trackedController?.registerCallback(controllerCallback)
                       }
-                      controller?.metadata?.let { saveAndShowTrack(it) }
+                      val state = controller?.playbackState?.state
+                      val metadata = controller?.metadata
+                      val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+                      val sessionSummary = sessions.joinToString(",") { it.packageName.substringAfterLast('.') }
+                      val status = if (controller == null) {
+                          "YouTube Music: сессия НЕ найдена; активных сессий: ${sessions.size} [${sessionSummary}]"
+                      } else {
+                          "YouTube Music: сессия найдена; state=${state}; title=${title.ifBlank { "пусто" }}; активных сессий: ${sessions.size}"
+                      }
+                      showDiagnostic(status)
+                      metadata?.let { saveAndShowTrack(it) }
+                  } catch (e: Exception) {
+                      showDiagnostic("Ошибка опроса: ${e.javaClass.simpleName}: ${e.message ?: "без подробностей"}")
+                  }
+              }
+
+              private fun showDiagnostic(message: String) {
+                  val now = System.currentTimeMillis()
+                  if (message == lastDiagnostic && now - lastDiagnosticAt < 5000L) return
+                  lastDiagnostic = message
+                  lastDiagnosticAt = now
+                  try {
+                      val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, "trackfloat_debug")
+                          else Notification.Builder(this)
+                      val notification = builder
+                          .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                          .setContentTitle("TrackFloat — диагностика")
+                          .setContentText(message)
+                          .setStyle(Notification.BigTextStyle().bigText(message))
+                          .setOnlyAlertOnce(true)
+                          .setOngoing(true)
+                          .build()
+                      getSystemService(NotificationManager::class.java).notify(702, notification)
                   } catch (_: Exception) { }
               }
 
@@ -144,9 +180,14 @@ jobs:
 
               private fun createChannel() {
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      getSystemService(NotificationManager::class.java).createNotificationChannel(
+                      val manager = getSystemService(NotificationManager::class.java)
+                      manager.createNotificationChannel(
                           NotificationChannel(channelId, "TrackFloat — сейчас играет", NotificationManager.IMPORTANCE_LOW)
                               .apply { description = "Текущий трек из YouTube Music" }
+                      )
+                      manager.createNotificationChannel(
+                          NotificationChannel("trackfloat_debug", "TrackFloat — диагностика", NotificationManager.IMPORTANCE_LOW)
+                              .apply { description = "Состояние подключения к музыкальной сессии" }
                       )
                   }
               }
