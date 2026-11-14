@@ -1,4 +1,4 @@
-name: Build TrackFloat APK # notification-permission-fix
+name: Build TrackFloat APK # Jamendo-search-build
 
 on:
   workflow_dispatch:
