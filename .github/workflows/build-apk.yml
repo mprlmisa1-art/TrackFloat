@@ -45,8 +45,7 @@ jobs:
           import android.content.Intent
           import android.media.MediaMetadata
           import android.media.session.MediaController
-          import android.media.session.MediaSession
-          import android.media.session.PlaybackState
+          import android.media.session.MediaSessionManager
           import android.net.Uri
           import android.os.Build
           import android.os.Environment
@@ -62,11 +61,10 @@ jobs:
               private val youtubeMusicPackage = "com.google.android.apps.youtube.music"
               private val channelId = "trackfloat_now_playing"
               private var trackedController: MediaController? = null
-              private var mediaSession: MediaSession? = null
 
               private val controllerCallback = object : MediaController.Callback() {
-                  override fun onMetadataChanged(metadata: MediaMetadata?) = saveAndShowTrack(metadata)
-                  override fun onPlaybackStateChanged(state: PlaybackState?) = refreshController()
+                  override fun onMetadataChanged(metadata: MediaMetadata?) { saveAndShowTrack(metadata) }
+                  override fun onPlaybackStateChanged(state: android.media.session.PlaybackState?) { refreshController() }
               }
 
               override fun onListenerConnected() {
@@ -85,14 +83,13 @@ jobs:
 
               override fun onDestroy() {
                   trackedController?.unregisterCallback(controllerCallback)
-                  mediaSession?.release()
-                  mediaSession = null
+                  trackedController = null
                   super.onDestroy()
               }
 
               private fun refreshController() {
                   try {
-                      val manager = getSystemService(Context.MEDIA_SESSION_SERVICE) as android.media.session.MediaSessionManager
+                      val manager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
                       val sessions = manager.getActiveSessions(ComponentName(this, TrackNotificationListener::class.java))
                       val controller = sessions.firstOrNull { it.packageName == youtubeMusicPackage }
                       if (controller !== trackedController) {
@@ -117,36 +114,28 @@ jobs:
 
               private fun createChannel() {
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      val manager = getSystemService(NotificationManager::class.java)
-                      manager.createNotificationChannel(NotificationChannel(
-                          channelId, "TrackFloat — сейчас играет", NotificationManager.IMPORTANCE_LOW
-                      ).apply { description = "Текущий трек из YouTube Music" })
+                      getSystemService(NotificationManager::class.java).createNotificationChannel(
+                          NotificationChannel(channelId, "TrackFloat — сейчас играет", NotificationManager.IMPORTANCE_LOW)
+                              .apply { description = "Текущий трек из YouTube Music" }
+                      )
                   }
               }
 
               private fun showTrackNotification(title: String, artist: String) {
-                  val session = mediaSession ?: MediaSession(this, "TrackFloatMediaSession").also {
-                      it.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
-                      it.isActive = true
-                      mediaSession = it
+                  val openIntent = Intent(this, MainActivity::class.java).apply {
+                      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                   }
-                  session.setMetadata(android.media.MediaMetadata.Builder()
-                      .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                      .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
-                      .build())
-                  session.setPlaybackState(PlaybackState.Builder()
-                      .setState(PlaybackState.STATE_PLAYING, 0L, 1f)
-                      .setActions(0L)
-                      .build())
-
+                  val contentPendingIntent = PendingIntent.getActivity(
+                      this, 701, openIntent, PendingIntent.FLAG_UPDATE_CURRENT or
+                          (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+                  )
                   val downloadIntent = Intent(this, TrackDownloadReceiver::class.java).apply {
                       action = "com.example.trackfloat.DOWNLOAD_CURRENT_TRACK"
                       putExtra("title", title)
                       putExtra("artist", artist)
                   }
                   val downloadPendingIntent = PendingIntent.getBroadcast(
-                      this, 703, downloadIntent,
-                      PendingIntent.FLAG_UPDATE_CURRENT or
+                      this, 703, downloadIntent, PendingIntent.FLAG_UPDATE_CURRENT or
                           (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
                   )
                   val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, channelId)
@@ -155,8 +144,8 @@ jobs:
                       .setSmallIcon(android.R.drawable.ic_media_play)
                       .setContentTitle(title)
                       .setContentText(if (artist.isBlank()) "Сейчас играет" else artist)
-                      .setStyle(Notification.MediaStyle().setMediaSession(session.sessionToken)
-                          .setShowActionsInCompactView(0))
+                      .setStyle(Notification.BigTextStyle().bigText(if (artist.isBlank()) title else "$title — $artist"))
+                      .setContentIntent(contentPendingIntent)
                       .setOngoing(true)
                       .setOnlyAlertOnce(true)
                       .addAction(android.R.drawable.stat_sys_download, "Скачать MP3", downloadPendingIntent)
@@ -199,8 +188,7 @@ jobs:
                                       if (name.lowercase().endsWith(".mp3") && !name.contains("/") &&
                                           (format.contains("mp3") || format.contains("mpeg"))) {
                                           fileName = name
-                                          downloadUrl = "https://archive.org/download/$identifier/" +
-                                              Uri.encode(name, "@#&=*+-_.,:!?()/~'")
+                                          downloadUrl = "https://archive.org/download/$identifier/" + Uri.encode(name, "@#&=*+-_.,:!?()/~'")
                                           break
                                       }
                                   }
@@ -215,15 +203,12 @@ jobs:
                                   .setDescription("TrackFloat — $title")
                                   .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                                   .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "TrackFloat_$fileName")
-                              val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                              manager.enqueue(request)
+                              (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
                               Toast.makeText(context, "Загрузка добавлена в «Загрузки»", Toast.LENGTH_LONG).show()
                           }
                       } catch (_: Exception) {
                           Toast.makeText(context, "Не удалось найти или загрузить MP3. Попробуй позже", Toast.LENGTH_LONG).show()
-                      } finally {
-                          pending.finish()
-                      }
+                      } finally { pending.finish() }
                   }.start()
               }
 
