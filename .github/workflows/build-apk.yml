@@ -73,6 +73,17 @@ jobs:
                   refreshController()
               }
 
+              // Android/MIUI may temporarily disconnect notification listeners.
+              // Request a system rebind so track updates can resume automatically.
+              override fun onListenerDisconnected() {
+                  trackedController?.unregisterCallback(controllerCallback)
+                  trackedController = null
+                  super.onListenerDisconnected()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                      requestRebind(ComponentName(this, TrackNotificationListener::class.java))
+                  }
+              }
+
               override fun onNotificationPosted(sbn: StatusBarNotification?) {
                   if (sbn?.packageName == youtubeMusicPackage) refreshController()
               }
