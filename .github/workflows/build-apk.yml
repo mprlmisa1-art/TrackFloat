@@ -230,13 +230,39 @@ jobs:
           from pathlib import Path
           path = Path("app/src/main/AndroidManifest.xml")
           text = path.read_text()
-          permission = '    <uses-permission android:name="android.permission.INTERNET" />\\n'
+          permission = '    <uses-permission android:name="android.permission.INTERNET" />\\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\\n'
           if "android.permission.INTERNET" not in text:
               text = text.replace("<application", permission + "    <application", 1)
+          elif "android.permission.POST_NOTIFICATIONS" not in text:
+              text = text.replace("<application", '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\\n    <application', 1)
           receiver = '        <receiver android:name=".TrackDownloadReceiver" android:exported="false" />\\n    '
           if "TrackDownloadReceiver" not in text:
               text = text.replace("</application>", receiver + "</application>", 1)
           path.write_text(text)
+
+          # Android 13+ requires a runtime notification permission. Ask when the user opens the app.
+          from pathlib import Path
+          import re
+          candidates = list(Path("app/src/main/java").rglob("MainActivity.kt"))
+          if not candidates:
+              raise SystemExit("MainActivity.kt not found; cannot request notification permission")
+          activity = candidates[0]
+          source = activity.read_text()
+          marker = "override fun onCreate"
+          if marker not in source:
+              raise SystemExit("MainActivity.onCreate not found")
+          if "POST_NOTIFICATIONS" not in source:
+              match = re.search(r"(override\\s+fun\\s+onCreate\\s*\\([^)]*\\)\\s*\\{)", source)
+              if not match:
+                  raise SystemExit("Could not safely locate MainActivity.onCreate body")
+              request = '''
+                  if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1001)
+                  }
+              '''
+              source = source[:match.end()] + request + source[match.end():]
+              activity.write_text(source)
           PY
 
       - name: Configure Java and Kotlin JVM targets
