@@ -1,4 +1,4 @@
-name: Build TrackFloat APK # Jamendo-search-build
+name: Build TrackFloat APK # Jamendo-search-build-fixed
 
 on:
   workflow_dispatch:
